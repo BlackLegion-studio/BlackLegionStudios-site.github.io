@@ -2,16 +2,13 @@ import os
 import sys
 import glob
 import json
-from azure.ai.inference import ChatCompletionsClient
-from azure.ai.inference.models import SystemMessage, UserMessage
-from azure.core.credentials import AzureKeyCredential
+import subprocess
+import urllib.request
 
 def get_codebase_summary():
     """Собирает кодовую базу в один текст с номерами строк"""
     context = []
-    # Добавили LICENSE, чтобы робот мог читать лицензию проекта
     extensions = ['*.js', '*.py', '*.ts', '*.json', '*.md', '*.yml', '*.yaml', '*.html', 'LICENSE']
-    
     for ext in extensions:
         for filename in glob.glob(f'**/{ext}', recursive=True):
             if any(p in filename for p in ['.github/scripts', 'node_modules', '.git', 'package-lock.json']):
@@ -23,8 +20,6 @@ def get_codebase_summary():
                     context.append(f"--- ФАЙЛ: {filename} ---\n{file_content}\n")
             except Exception:
                 pass
-                
-    # Защита: если кодовая база пустая, возвращаем заглушку, чтобы ИИ не падал
     if not context:
         return "В репозитории пока нет файлов с кодом."
     return "\n".join(context)
@@ -34,6 +29,76 @@ def main():
     if not token:
         print("Ошибка: GITHUB_TOKEN не найден.")
         sys.exit(1)
+
+    title = os.getenv("QUESTION_TITLE", "")
+    body = os.getenv("QUESTION_BODY", "")
+    full_question = f"Заголовок: {title}\nТекст вопроса: {body}"
+    codebase = get_codebase_summary()
+
+    # Формируем промпт для Copilot
+    system_prompt = (
+        "Ты официальный ИИ-ассистент этого репозитория. Отвечай строго на русском языке. "
+        "Проанализируй вопрос пользователя и код проекта. Дай точный ответ, посчитай если просят, "
+        "если нужно — процитируй кусок кода. Будь дружелюбным ботом."
+    )
+    
+    full_prompt = f"{system_prompt}\n\nКОД ПРОЕКТА:\n{codebase}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{full_question}"
+
+    print("Запрос отправляется во встроенный GitHub Copilot...")
+    
+    # Активируем встроенный в GitHub Actions ИИ-инструмент через консоль
+    try:
+        # Устанавливаем расширение copilot для консоли, если его нет
+        subprocess.run("gh extension install github/gh-copilot --force", shell=True, check=True)
+        
+        # Передаем наш текст напрямую в официальный ИИ Гитхаба
+        process = subprocess.Popen(
+            ["gh", "copilot", "explain", full_prompt],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8"
+        )
+        stdout, stderr = process.communicate()
+        
+        if process.returncode != 0 or not stdout.strip():
+            # Запасной вариант, если утилита explain перегружена
+            process = subprocess.Popen(
+                ["gh", "copilot", "suggest", "-t", "shell", full_prompt],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8"
+            )
+            stdout, stderr = process.communicate()
+            
+        ai_answer = stdout.strip() if stdout.strip() else "Извините, не удалось получить ответ от встроенного ИИ."
+    except Exception as e:
+        ai_answer = f"Ошибка вызова встроенного ИИ GitHub: {e}"
+
+    # Публикуем официальный ответ через API от имени бота github-actions[bot]
+    repo = os.getenv("GITHUB_REPOSITORY")
+    issue_number = os.getenv("ISSUE_NUMBER")
+    url = f"https://github.com{repo}/issues/{issue_number}/comments"
+    
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "GitHub-Actions"
+    }
+    
+    data = json.dumps({"body": ai_answer}).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    
+    try:
+        with urllib.request.urlopen(req) as resp:
+            print("Комментарий успешно опубликован фиолетовым ботом!")
+    except Exception as e:
+        print(f"Ошибка отправки через API: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
 
     try:
         client = ChatCompletionsClient(
