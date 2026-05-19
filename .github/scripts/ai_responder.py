@@ -2,8 +2,8 @@ import os
 import sys
 import glob
 import json
-import subprocess
 import urllib.request
+import urllib.error
 
 def get_codebase_summary():
     """Собирает кодовую базу в один текст с номерами строк"""
@@ -35,126 +35,60 @@ def main():
     full_question = f"Заголовок: {title}\nТекст вопроса: {body}"
     codebase = get_codebase_summary()
 
-    # Формируем промпт для Copilot
     system_prompt = (
-        "Ты официальный ИИ-ассистент этого репозитория. Отвечай строго на русском языке. "
+        "Ты официальный ИИ-ассистент этого репозитория. Отвечай строго на русском языке.\n"
         "Проанализируй вопрос пользователя и код проекта. Дай точный ответ, посчитай если просят, "
         "если нужно — процитируй кусок кода. Будь дружелюбным ботом."
     )
     
-    full_prompt = f"{system_prompt}\n\nКОД ПРОЕКТА:\n{codebase}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{full_question}"
+    # 1. Запрос к официальному бесплатному ИИ Гитхаба (Модель GPT-4o)
+    ai_url = "https://azure.com"
+    ai_headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    ai_data = json.dumps({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"КОД ПРОЕКТА:\n{codebase}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{full_question}"}
+        ],
+        "temperature": 0.2
+    }).encode("utf-8")
 
-    print("Запрос отправляется во встроенный GitHub Copilot...")
+    print("Запрос к ИИ-серверу GitHub...")
+    req_ai = urllib.request.Request(ai_url, data=ai_data, headers=ai_headers, method="POST")
     
-    # Активируем встроенный в GitHub Actions ИИ-инструмент через консоль
     try:
-        # Устанавливаем расширение copilot для консоли, если его нет
-        subprocess.run("gh extension install github/gh-copilot --force", shell=True, check=True)
-        
-        # Передаем наш текст напрямую в официальный ИИ Гитхаба
-        process = subprocess.Popen(
-            ["gh", "copilot", "explain", full_prompt],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8"
-        )
-        stdout, stderr = process.communicate()
-        
-        if process.returncode != 0 or not stdout.strip():
-            # Запасной вариант, если утилита explain перегружена
-            process = subprocess.Popen(
-                ["gh", "copilot", "suggest", "-t", "shell", full_prompt],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8"
-            )
-            stdout, stderr = process.communicate()
-            
-        ai_answer = stdout.strip() if stdout.strip() else "Извините, не удалось получить ответ от встроенного ИИ."
+        with urllib.request.urlopen(req_ai) as response:
+            res = json.loads(response.read().decode("utf-8"))
+            ai_answer = res["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        ai_answer = f"Ошибка ИИ-сервера (HTTP {e.code}). Перезапустите воркфлоу позже."
     except Exception as e:
-        ai_answer = f"Ошибка вызова встроенного ИИ GitHub: {e}"
+        ai_answer = f"Не удалось связаться с ИИ-сервером: {e}"
 
-    # Публикуем официальный ответ через API от имени бота github-actions[bot]
+    # 2. Публикация ответа в ваш Issue (от имени фиолетового робота github-actions)
     repo = os.getenv("GITHUB_REPOSITORY")
     issue_number = os.getenv("ISSUE_NUMBER")
-    url = f"https://github.com{repo}/issues/{issue_number}/comments"
+    github_api_url = f"https://github.com{repo}/issues/{issue_number}/comments"
     
-    headers = {
+    github_headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "GitHub-Actions"
     }
     
-    data = json.dumps({"body": ai_answer}).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    github_data = json.dumps({"body": ai_answer}).encode("utf-8")
+    req_github = urllib.request.Request(github_api_url, data=github_data, headers=github_headers, method="POST")
     
+    print("Отправка комментария в GitHub...")
     try:
-        with urllib.request.urlopen(req) as resp:
-            print("Комментарий успешно опубликован фиолетовым ботом!")
+        with urllib.request.urlopen(req_github) as resp:
+            print("Успех! Комментарий опубликован.")
     except Exception as e:
-        print(f"Ошибка отправки через API: {e}")
+        print(f"Ошибка отправки в ветку GitHub: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
     main()
-
-    try:
-        client = ChatCompletionsClient(
-            endpoint="https://azure.com",
-            credential=AzureKeyCredential(token)
-        )
-    except Exception as e:
-        print(f"Ошибка инициализации клиента: {e}")
-        sys.exit(1)
-    
-    title = os.getenv("QUESTION_TITLE", "")
-    body = os.getenv("QUESTION_BODY", "")
-    full_question = f"Заголовок: {title}\nТекст вопроса: {body}"
-    
-    codebase = get_codebase_summary()
-
-    system_prompt = (
-        "Ты — ИИ-ассистент этого репозитория. Отвечай строго на русском языке.\n"
-        "Твоя задача — изучить код проекта и ответить на вопрос пользователя.\n"
-        "Правила ответа:\n"
-        "1. Найди в предоставленном коде ответ. Если он есть, ОБЯЗАТЕЛЬНО процитируй кусок кода с указанием пути к файлу.\n"
-        "   Формат цитаты:\n"
-        "   ```\n   // Путь: название_файла.ext\n   строка_кода_с_номером\n   ```\n"
-        "2. Кратко и понятно объясни логику работы этой части кода.\n"
-        "3. Если в коде нет временно ответа, честно скажи об этом."
-    )
-
-    user_prompt = f"КОД ПРОЕКТА:\n{codebase}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{full_question}"
-
-    try:
-        response = client.complete(
-            messages=[
-                SystemMessage(content=system_prompt),
-                UserMessage(content=user_prompt)
-            ],
-            model="gpt-4o",
-            temperature=0.2
-        )
-        ai_answer = response.choices.message.content
-    except Exception as e:
-        print(f"Ошибка запроса к ИИ: {e}")
-        sys.exit(1)
-
-    # Запись комментария в файл
-    comment_file = "comment.json"
-    with open(comment_file, "w", encoding="utf-8") as f:
-        json.dump({"body": ai_answer}, f)
-        
-    issue_number = os.getenv("ISSUE_NUMBER")
-    
-    # Пытаемся отправить комментарий
-    exit_code = os.system(f"gh issue comment {issue_number} --body-file {comment_file}")
-    if exit_code != 0:
-        print("Ошибка отправки комментария через GitHub CLI. Проверьте Workflow Permissions в настройках!")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
- 
