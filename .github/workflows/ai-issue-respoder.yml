@@ -1,4 +1,4 @@
-name: AI Issue & Comment Responder
+name: GitHub AI Issue Responder
 
 on:
   issues:
@@ -12,32 +12,24 @@ permissions:
 
 jobs:
   ai-respond:
-    # Игнорируем комментарии от самого бота, чтобы не было бесконечного цикла
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      # 1. Скачиваем весь код репозитория
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Настраиваем Python окружение
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+      # Нам понадобится библиотека azure-ai-inference для работы с моделями GitHub
+      - name: Set up Python and Install dependencies
+        run: |
+          sudo apt-get update
+          python3 -m pip install azure-ai-inference
 
-      # 3. Устанавливаем библиотеку для работы с ИИ
-      - name: Install dependencies
-        run: pip install openai
-
-      # 4. Запускаем нашего умного ИИ-агента
-      - name: Run AI Responder Script
+      - name: Run GitHub AI Responder
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Используем встроенный токен GitHub, ничего настраивать не нужно!
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Передаем контекст: текст вопроса, тип события и ссылку на него
           EVENT_TYPE: ${{ github.event_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           QUESTION_BODY: ${{ github.event.comment.body || github.event.issue.body }}
           QUESTION_TITLE: ${{ github.event.issue.title }}
-        run: python .github/scripts/ai_responder.py
+        run: python3 .github/scripts/ai_responder.py
