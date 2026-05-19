@@ -12,24 +12,20 @@ permissions:
 
 jobs:
   ai-respond:
-    if: github.actor != 'github-actions[bot]'
+    # Защита: не отвечаем самим себе и другим ботам
+    if: |
+      github.actor != 'github-actions[bot]' && 
+      github.actor != 'github-actions'
     runs-on: ubuntu-latest
     steps:
-      # 1. Забираем код из репозитория
+      # 1. Скачиваем код репозитория
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Накатываем Python и нужную библиотеку для работы с ИИ от GitHub
-      - name: Set up Python and Install dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install azure-ai-inference
-
-      # 3. Запускаем скрипт. Имя файла строго: ai_responder.py
+      # 2. Запускаем встроенный скрипт
       - name: Run GitHub AI Responder
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_TYPE: ${{ github.event_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           QUESTION_BODY: ${{ github.event.comment.body || github.event.issue.body }}
           QUESTION_TITLE: ${{ github.event.issue.title }}
