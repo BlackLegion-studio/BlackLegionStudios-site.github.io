@@ -1,0 +1,65 @@
+name: Auto Changelog Generator
+
+on:
+  push:
+    branches:
+      - main  # Если у вас ветка master, замените на master
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-changelog:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Скачиваем весь код и всю историю коммитов
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. Генерируем чейнджлог из коммитов
+      - name: Build Changelog
+        id: github_release_changelog
+        uses: mikepenz/release-changelog-builder-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3. Записываем строго в CHANGELOG.md (Каписом, чтобы GitHub вывел кнопку)
+      - name: Update CHANGELOG.md file
+        run: |
+          # Создаем красивую структуру, которую любит парсер GitHub
+          echo -e "# CHANGELOG\n\n${{ steps.github_release_changelog.outputs.changelog }}\n\n$(cat CHANGELOG.md 2>/dev/null || true)" > CHANGELOG.md
+
+      # 4. Сверхсерьезная проверка на обман и пустые коммиты
+      - name: Paranoid Validation
+        run: |
+          echo "=== ПРОВЕРКА ЧЕСТНОСТИ РАЗРАБОТЧИКА ==="
+          LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
+          
+          # Проверяем на мусорные слова
+          if [[ "$LAST_COMMIT_MSG" =~ ^(fix|update|minor|changes|тест|нихера|доработки)$ ]] || [ ${#LAST_COMMIT_MSG} -lt 5 ]; then
+            echo "❌ Блокировка: Коммит пустой, мусорный или содержит обман!"
+            exit 1
+          fi
+          
+          # Проверяем, изменились ли вообще файлы
+          CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD | grep -v "CHANGELOG.md" || true)
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "❌ Блокировка: Изменений в коде нет, а чейнджлог пытаются обновить!"
+            exit 1
+          fi
+          echo "✅ Проверка пройдена. Разработчик написал правду."
+
+      # 5. Сохраняем файл и отправляем в репозиторий
+      - name: Commit and Push changes
+        run: |
+          git config --local user.email "github-actions[bot]@://github.com"
+          git config --local user.name "github-actions[bot]"
+          git add CHANGELOG.md
+          
+          # [skip ci] нужен, чтобы бот не вызывал бесконечный цикл проверок самого себя
+          git commit -m "docs: automatic CHANGELOG.md update [skip ci]" || echo "Нет изменений"
+          git push origin HEAD:${{ github.ref }}
