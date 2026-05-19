@@ -12,17 +12,12 @@ permissions:
 
 jobs:
   ai-respond:
-    # Защита: не отвечаем самим себе и другим ботам
-    if: |
-      github.actor != 'github-actions[bot]' && 
-      github.actor != 'github-actions'
+    if: github.actor != 'github-actions[bot]' && github.actor != 'github-actions'
     runs-on: ubuntu-latest
     steps:
-      # 1. Скачиваем код репозитория
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Запускаем встроенный скрипт
       - name: Run GitHub AI Responder
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
