@@ -1,15 +1,16 @@
 import os
 import sys
 import glob
-import subprocess
 
 def get_codebase_summary():
     """Собирает кодовую базу в один текст с номерами строк"""
     context = []
-    extensions = ['*.js', '*.py', '*.ts', '*.json', '*.md', '*.yml', '*.yaml', '*.html', 'LICENSE']
+    # Добавили .gitignore в список разрешенных расширений
+    extensions = ['*.js', '*.py', '*.ts', '*.json', '*.md', '*.yml', '*.yaml', '*.html', 'LICENSE', '.gitignore']
     for ext in extensions:
         for filename in glob.glob(f'**/{ext}', recursive=True):
-            if any(p in filename for p in ['.github/scripts', 'node_modules', '.git', 'package-lock.json']):
+            # Теперь игнорируем ТОЛЬКО папку со скриптами, а не всю .github!
+            if any(p in filename for p in ['.github/scripts', 'node_modules', '.git/', 'package-lock.json']):
                 continue
             try:
                 with open(filename, 'r', encoding='utf-8') as f:
@@ -30,38 +31,49 @@ def main():
 
     title = os.getenv("QUESTION_TITLE", "")
     body = os.getenv("QUESTION_BODY", "")
-    full_question = f"Заголовок: {title}\nТекст вопроса: {body}"
-    codebase = get_codebase_summary()
+    full_question = (f"{title} {body}").lower()
+    
+    # Ищем файлы по всему репозиторию на любую глубину
+    all_files = glob.glob('**/*', recursive=True)
+    found_file_path = None
+    found_file_name = None
 
-    print("Локальный анализ кодовой базы без интернета...")
-    
-    # Ищем файлы лицензии в проекте
-    license_files = glob.glob('**/LICENSE*', recursive=True) or glob.glob('**/license*', recursive=True)
-    
-    if "лиценз" in full_question.lower() and license_files:
-        path_to_license = license_files[0]
+    for file_path in all_files:
+        if os.path.isdir(file_path) or ".git/" in file_path or ".github/scripts" in file_path:
+            continue
+        base_name = os.path.basename(file_path).lower()
+        
+        # Если имя файла (например, .gitignore) упомянуто в вопросе
+        if base_name in full_question and base_name != "":
+            found_file_path = file_path
+            found_file_name = os.path.basename(file_path)
+            break
+
+    # Если нашли файл в нашей глубокой структуре
+    if found_file_path:
         try:
-            with open(path_to_license, 'r', encoding='utf-8') as lf:
-                # Берем первые 10 строк лицензии для вывода
-                first_lines = "".join(lf.readlines()[:10])
+            with open(found_file_path, 'r', encoding='utf-8') as f:
+                first_lines = "".join(f.readlines()[:15])
+            
             ai_answer = (
                 f"🤖 **Я локальный ИИ-помощник репозитория (Защищенный режим).**\n\n"
-                f"Ответ на ваш вопрос найден внутри файлов проекта!\n"
-                f"Ваша лицензия лежит по пути: `{path_to_license}`.\n\n"
-                f"```text\n// Выдержка из файла {path_to_license}:\n{first_lines}\n```\n"
-                f"Всё работает локально и без сбоев сети!"
+                f"Файл успешно обнаружен в секретной папке!\n"
+                f"Настоящий путь к нему: `{found_file_path}`.\n\n"
+                f"```text\n// Содержимое файла {found_file_name}:\n{first_lines}\n```\n"
+                f"Я смог раскопать этот путь локально!"
             )
         except Exception as e:
-            ai_answer = f"🤖 Файл лицензии найден (`{path_to_license}`), но не удалось его прочесть: {e}"
+            ai_answer = f"🤖 Файл `{found_file_name}` найден по пути `{found_file_path}`, но не удалось его прочесть: {e}"
+            
     else:
-        # Ответ на любой другой 일반ный вопрос
+        codebase = get_codebase_summary()
         ai_answer = (
-            f"🤖 **ИИ-помощник:** Я успешно проверил файлы репозитория в защищенном режиме.\n\n"
-            f"В коде вашего проекта сейчас обнаружено {len(codebase.splitlines())} строк текста.\n"
-            f"Внутренние системы GitHub CLI работают стабильно!"
+            f"🤖 **ИИ-помощник:** Я просканировал репозиторий, но не нашёл упоминания такого файла.\n\n"
+            f"Убедитесь, что вы правильно написали его имя (например, `.gitignore`).\n"
+            f"Всего в доступных файлах сейчас {len(codebase.splitlines())} строк текста."
         )
 
-    # Сохраняем как ЧИСТЫЙ ТЕКСТ (без JSON), чтобы не ломался русский язык
+    # Сохраняем как ЧИСТЫЙ ТЕКСТ
     comment_file = "bot_comment.txt"
     with open(comment_file, "w", encoding="utf-8") as f:
         f.write(ai_answer)
@@ -69,14 +81,10 @@ def main():
     issue_number = os.getenv("ISSUE_NUMBER")
     
     print("Отправка чистого текста через ядро GitHub CLI...")
-    # Передаем обычный текстовый файл, гитхаб сам его распарсит
     exit_code = os.system(f"gh issue comment {issue_number} --body-file {comment_file}")
     
     if exit_code != 0:
-        print("Ошибка ядра GitHub CLI.")
         sys.exit(1)
-    else:
-        print("Успех! Комментарий опубликован на русском языке.")
 
 if __name__ == "__main__":
     main()
