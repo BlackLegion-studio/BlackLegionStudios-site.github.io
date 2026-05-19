@@ -1,23 +1,25 @@
 import os
 import sys
 import glob
-from openai import OpenAI
+import json
+# Используем встроенную библиотеку для моделей GitHub
+from azure.ai.inference import ChatCompletionsClient
+from azure.ai.inference.models import SystemMessage, UserMessage
+from azure.core.credentials import AzureKeyCredential
 
 def get_codebase_summary():
-    """Собирает все текстовые файлы кода в один структурированный контекст для ИИ"""
+    """Собирает кодовую базу в один текст с номерами строк"""
     context = []
-    # Ищем файлы кода. Добавьте расширения ваших файлов (например, *.py, *.js, *.go)
-    extensions = ['*.js', '*.py', '*.ts', '*.json', '*.md', '*.txt', '*.sh']
+    # Добавьте сюда расширения файлов вашего проекта, если нужно
+    extensions = ['*.js', '*.py', '*.ts', '*.json', '*.md', '*.yml', '*.yaml', '*.html']
     
     for ext in extensions:
-        # Ищет файлы даже в глубоких подпапках, игнорируя системные папки
         for filename in glob.glob(f'**/{ext}', recursive=True):
-            if '.github' in filename or 'node_modules' in filename or '.git' in filename:
+            if any(p in filename for p in ['.github/scripts', 'node_modules', '.git', 'package-lock.json']):
                 continue
             try:
                 with open(filename, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
-                    # Форматируем файл с номерами строк для удобства цитирования
                     file_content = "".join([f"{i+1}: {line}" for i, line in enumerate(lines)])
                     context.append(f"--- ФАЙЛ: {filename} ---\n{file_content}\n")
             except Exception:
@@ -25,55 +27,54 @@ def get_codebase_summary():
     return "\n".join(context)
 
 def main():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("Пропущено: Нет токена OPENAI_API_KEY в Secrets.")
+    # Токен GitHub автоматически подставляется системой
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        print("Ошибка: GITHUB_TOKEN не найден.")
         return
 
-    client = OpenAI(api_key=api_key)
+    # Подключаемся к бесплатному маркетплейсу моделей GitHub
+    client = ChatCompletionsClient(
+        endpoint="https://azure.com",
+        credential=AzureKeyCredential(token)
+    )
     
-    # Собираем данные о вопросе
     title = os.getenv("QUESTION_TITLE", "")
     body = os.getenv("QUESTION_BODY", "")
     full_question = f"Заголовок: {title}\nТекст вопроса: {body}"
     
-    # Сканируем весь код проекта
     codebase = get_codebase_summary()
 
-    # Формируем жесткую системную инструкцию для ИИ
     system_prompt = (
-        "Ты — эксперт-инженер проекта. Твоя задача — отвечать на вопросы пользователей по коду.\n"
+        "Ты — ИИ-ассистент этого репозитория. Отвечай строго на русском языке.\n"
+        "Твоя задача — изучить код проекта и ответить на вопрос пользователя.\n"
         "Правила ответа:\n"
-        "1. Проанализируй весь предоставленный код проекта.\n"
-        "2. Определи, есть ли в коде (или комментариях к нему) ответ на этот вопрос.\n"
-        "3. Если ответ есть, ОБЯЗАТЕЛЬНО процитируй кусок кода в формате:\n"
-        "   ```язык\n   // Путь к файлу: название_файла.ext\n   строка_кода\n   ```\n"
-        "4. Дай краткое, понятное пояснение человеку на русском языке.\n"
-        "5. Если в коде нет ответа, прямо ответь: 'В текущем коде проекта этого нет или это не реализовано', и кратко подскажи, куда смотреть."
+        "1. Найди в предоставленном коде ответ. Если он есть, ОБЯЗАТЕЛЬНО процитируй кусок кода с указанием пути к файлу.\n"
+        "   Формат цитаты:\n"
+        "   ```язык\n   // Путь: название_файла.ext\n   строка_кода_с_номером\n   ```\n"
+        "2. Кратко и понятно объясни логику работы этой части кода.\n"
+        "3. Если в коде нет ответа или функционал не реализован, честно ответь: "
+        "'В текущем коде проекта этого нет или это не реализовано' и предложи базовое решение."
     )
 
-    user_prompt = f"КОДБЕЙЗ ПРОЕКТА:\n{codebase}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{full_question}"
+    user_prompt = f"КОД ПРОЕКТА:\n{codebase}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{full_question}"
 
-    # Запрос к нейросети (используем gpt-4o для сложного анализа кода)
-    response = client.chat.completions.create(
-        model="gpt-4o",
+    # Бесплатно вызываем самую мощную модель gpt-4o из каталога GitHub
+    response = client.complete(
         messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            SystemMessage(content=system_prompt),
+            UserMessage(content=user_prompt)
         ],
+        model="gpt-4o",
         temperature=0.2
     )
     
     ai_answer = response.choices[0].message.content
 
-    # Публикуем ответ обратно в GitHub Issue / Комментарий
+    # Публикуем комментарий в ветку обсуждения (Issue) через встроенную утилиту gh
     issue_number = os.getenv("ISSUE_NUMBER")
-    repo = os.getenv("GITHUB_REPOSITORY")
-    
-    # Используем утилиту curl через GitHub CLI (gh), которая уже встроена в GitHub Actions
     comment_file = "comment.json"
     with open(comment_file, "w", encoding="utf-8") as f:
-        import json
         json.dump({"body": ai_answer}, f)
         
     os.system(f"gh issue comment {issue_number} --body-file {comment_file}")
