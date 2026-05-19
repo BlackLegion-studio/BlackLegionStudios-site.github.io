@@ -1,15 +1,16 @@
 import os
 import sys
 import glob
+import subprocess
+import json
+import urllib.request
 
 def get_codebase_summary():
-    """Собирает кодовую базу в один текст с номерами строк"""
+    """Собирает кодовую базу репозитория в единый контекст для ИИ"""
     context = []
-    # Добавили .gitignore в список разрешенных расширений
     extensions = ['*.js', '*.py', '*.ts', '*.json', '*.md', '*.yml', '*.yaml', '*.html', 'LICENSE', '.gitignore']
     for ext in extensions:
         for filename in glob.glob(f'**/{ext}', recursive=True):
-            # Теперь игнорируем ТОЛЬКО папку со скриптами, а не всю .github!
             if any(p in filename for p in ['.github/scripts', 'node_modules', '.git/', 'package-lock.json']):
                 continue
             try:
@@ -23,68 +24,90 @@ def get_codebase_summary():
         return "В репозитории пока нет файлов с кодом."
     return "\n".join(context)
 
+def ask_github_llm(token, system_prompt, user_prompt):
+    """Использует встроенный БЕСПЛАТНЫЙ ИИ от GitHub (Модель GPT-4o-mini). Ключ не нужен!"""
+    # Этот эндпоинт встроен в инфраструктуру GitHub Actions и доступен по вашему GITHUB_TOKEN
+    url = "https://azure.com"
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "model": "gpt-4o-mini", # Отличная бесплатная модель для кодинга
+        "temperature": 0.2,
+        "max_tokens": 4096
+    }
+    
+    req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers=headers)
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            res_data = json.loads(response.read().decode('utf-8'))
+            return res_data['choices']['message']['content']
+    except Exception as e:
+        return f"❌ Ошибка встроенного ИИ: {e}. Проверьте, включен ли доступ в репозитории."
+
 def main():
+    # Берем тот самый токен, который GitHub Actions выдает вашей сборке автоматически
     token = os.getenv("GITHUB_TOKEN")
     if not token:
         print("Ошибка: GITHUB_TOKEN не найден.")
         sys.exit(1)
 
+    issue_number = os.getenv("ISSUE_NUMBER")
+    if not issue_number:
+        print("Ошибка: ISSUE_NUMBER не задан.")
+        sys.exit(1)
+
     title = os.getenv("QUESTION_TITLE", "")
     body = os.getenv("QUESTION_BODY", "")
-    full_question = (f"{title} {body}").lower()
     
-    # Ищем файлы по всему репозиторию на любую глубину
-    all_files = glob.glob('**/*', recursive=True)
-    found_file_path = None
-    found_file_name = None
+    # Собираем контекст вашего проекта
+    codebase = get_codebase_summary()
+    
+    system_prompt = (
+        "Ты — опытный ИИ-программист. Твоя цель — писать, дополнять и исправлять код для пользователя. "
+        "Тебе дан текущий код проекта (файлы и строки). Пиши новые функции так, чтобы они подходили под архитектуру. "
+        "Отвечай строго по делу, присылай готовый к копированию код в Markdown-блоках с указанием языка."
+    )
+    
+    user_prompt = (
+        f"Текущий проект:\n\n{codebase}\n\n"
+        f"--- ЗАДАНИЕ ---\n"
+        f"Тема: {title}\n"
+        f"Что нужно сделать:\n{body}\n"
+    )
+    
+    print("Запрос отправлен во встроенный ИИ GitHub...")
+    ai_raw_response = ask_github_llm(token, system_prompt, user_prompt)
+    
+    ai_answer = (
+        f"🤖 **Локальный ИИ-разработчик:**\n\n"
+        f"{ai_raw_response}"
+    )
 
-    for file_path in all_files:
-        if os.path.isdir(file_path) or ".git/" in file_path or ".github/scripts" in file_path:
-            continue
-        base_name = os.path.basename(file_path).lower()
-        
-        # Если имя файла (например, .gitignore) упомянуто в вопросе
-        if base_name in full_question and base_name != "":
-            found_file_path = file_path
-            found_file_name = os.path.basename(file_path)
-            break
-
-    # Если нашли файл в нашей глубокой структуре
-    if found_file_path:
-        try:
-            with open(found_file_path, 'r', encoding='utf-8') as f:
-                first_lines = "".join(f.readlines()[:15])
-            
-            ai_answer = (
-                f"🤖 **Я локальный ИИ-помощник репозитория (Защищенный режим).**\n\n"
-                f"Файл успешно обнаружен в секретной папке!\n"
-                f"Настоящий путь к нему: `{found_file_path}`.\n\n"
-                f"```text\n// Содержимое файла {found_file_name}:\n{first_lines}\n```\n"
-                f"Я смог раскопать этот путь локально!"
-            )
-        except Exception as e:
-            ai_answer = f"🤖 Файл `{found_file_name}` найден по пути `{found_file_path}`, но не удалось его прочесть: {e}"
-            
-    else:
-        codebase = get_codebase_summary()
-        ai_answer = (
-            f"🤖 **ИИ-помощник:** Я просканировал репозиторий, но не нашёл упоминания такого файла.\n\n"
-            f"Убедитесь, что вы правильно написали его имя (например, `.gitignore`).\n"
-            f"Всего в доступных файлах сейчас {len(codebase.splitlines())} строк текста."
-        )
-
-    # Сохраняем как ЧИСТЫЙ ТЕКСТ
     comment_file = "bot_comment.txt"
     with open(comment_file, "w", encoding="utf-8") as f:
         f.write(ai_answer)
         
-    issue_number = os.getenv("ISSUE_NUMBER")
+    print("Публикация ответа в Issue...")
+    result = subprocess.run(
+        ["gh", "issue", "comment", issue_number, "--body-file", comment_file],
+        capture_output=True,
+        text=True
+    )
     
-    print("Отправка чистого текста через ядро GitHub CLI...")
-    exit_code = os.system(f"gh issue comment {issue_number} --body-file {comment_file}")
-    
-    if exit_code != 0:
+    if result.returncode != 0:
+        print(f"Ошибка отправки: {result.stderr}")
         sys.exit(1)
+        
+    print("Готово!")
 
 if __name__ == "__main__":
     main()
